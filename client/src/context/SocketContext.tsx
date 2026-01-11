@@ -27,9 +27,13 @@ export const SocketProvider: React.FC<SocketProviderProps> = ({ children }) => {
   const [isConnected, setIsConnected] = useState(false);
 
   useEffect(() => {
-    const serverUrl = import.meta.env.VITE_SERVER_URL || 'http://localhost:3001';
+    // Production: use environment variable, Development: use localhost
+    const serverUrl = import.meta.env.VITE_SERVER_URL || 
+      (import.meta.env.PROD ? '' : 'http://localhost:3001');
+    
     const newSocket: TypedSocket = io(serverUrl, {
       transports: ['websocket', 'polling'],
+      path: '/socket.io/',
     });
 
     newSocket.on('connect', () => {

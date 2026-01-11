@@ -1,0 +1,14 @@
+# Render Blueprint for Backend Server
+services:
+  - type: web
+    name: oichokabu-server
+    runtime: node
+    rootDir: server
+    buildCommand: npm install && npm run build
+    startCommand: npm start
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: CLIENT_URL
+        sync: false  # Set this manually to your Vercel frontend URL
+    healthCheckPath: /health
