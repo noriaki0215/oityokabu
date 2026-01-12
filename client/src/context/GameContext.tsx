@@ -1,16 +1,23 @@
-// ゲーム状態管理コンテキスト
+// ゲーム状態管理コンテキスト（API版）
 
-import React, { createContext, useContext, useReducer, useEffect, useCallback } from 'react';
-import { useSocket } from './SocketContext';
+import React, { createContext, useContext, useReducer, useEffect, useCallback, useRef } from 'react';
+import { useApi } from './ApiContext';
 import { 
   Player, 
   GameState, 
   RoundResult,
-  PageType,
-  AppState 
 } from '../types';
 
-interface GameContextState extends AppState {
+type PageType = 'title' | 'join' | 'create' | 'lobby' | 'game' | 'result';
+
+interface GameContextState {
+  page: PageType;
+  roomCode: string | null;
+  nickname: string;
+  playerId: string;
+  isHost: boolean;
+  isConnected: boolean;
+  error: string | null;
   players: Player[];
   gameState: GameState | null;
   roundResult: RoundResult | null;
@@ -22,8 +29,7 @@ type GameAction =
   | { type: 'SET_ERROR'; error: string | null }
   | { type: 'ROOM_CREATED'; roomCode: string; player: Player }
   | { type: 'ROOM_JOINED'; roomCode: string; player: Player; players: Player[] }
-  | { type: 'PLAYER_JOINED'; player: Player; players: Player[] }
-  | { type: 'PLAYER_LEFT'; playerId: string; players: Player[] }
+  | { type: 'UPDATE_ROOM'; players: Player[]; gameState: GameState | null }
   | { type: 'GAME_STARTED'; gameState: GameState }
   | { type: 'GAME_STATE_UPDATED'; gameState: GameState }
   | { type: 'ROUND_ENDED'; result: RoundResult; gameState: GameState }
@@ -31,13 +37,22 @@ type GameAction =
   | { type: 'LEAVE_ROOM' }
   | { type: 'SET_CONNECTED'; isConnected: boolean };
 
+// ユニークなプレイヤーIDを生成
+function generatePlayerId(): string {
+  const stored = localStorage.getItem('playerId');
+  if (stored) return stored;
+  const id = 'p_' + Math.random().toString(36).substr(2, 9);
+  localStorage.setItem('playerId', id);
+  return id;
+}
+
 const initialState: GameContextState = {
   page: 'title',
   roomCode: null,
   nickname: '',
-  playerId: null,
+  playerId: generatePlayerId(),
   isHost: false,
-  isConnected: false,
+  isConnected: true,
   error: null,
   players: [],
   gameState: null,
@@ -60,7 +75,6 @@ function gameReducer(state: GameContextState, action: GameAction): GameContextSt
         ...state,
         page: 'lobby',
         roomCode: action.roomCode,
-        playerId: action.player.id,
         isHost: true,
         players: [action.player],
         error: null,
@@ -71,22 +85,20 @@ function gameReducer(state: GameContextState, action: GameAction): GameContextSt
         ...state,
         page: 'lobby',
         roomCode: action.roomCode,
-        playerId: action.player.id,
         isHost: action.player.isHost,
         players: action.players,
         error: null,
       };
     
-    case 'PLAYER_JOINED':
+    case 'UPDATE_ROOM':
+      const newPage = action.gameState?.phase === 'result' ? 'result' 
+        : action.gameState ? 'game' 
+        : state.page;
       return {
         ...state,
         players: action.players,
-      };
-    
-    case 'PLAYER_LEFT':
-      return {
-        ...state,
-        players: action.players,
+        gameState: action.gameState,
+        page: newPage,
       };
     
     case 'GAME_STARTED':
@@ -110,19 +122,12 @@ function gameReducer(state: GameContextState, action: GameAction): GameContextSt
       return {
         ...state,
         players: action.players,
-        gameState: state.gameState ? {
-          ...state.gameState,
-          players: state.gameState.players.map(p => {
-            const updated = action.players.find(up => up.id === p.id);
-            return updated ? { ...p, chips: updated.chips, totalResult: updated.totalResult } : p;
-          }),
-        } : null,
       };
     
     case 'LEAVE_ROOM':
       return {
         ...initialState,
-        isConnected: state.isConnected,
+        playerId: state.playerId,
         nickname: state.nickname,
       };
     
@@ -165,138 +170,133 @@ interface GameProviderProps {
 }
 
 export const GameProvider: React.FC<GameProviderProps> = ({ children }) => {
-  const { socket, isConnected } = useSocket();
+  const api = useApi();
   const [state, dispatch] = useReducer(gameReducer, initialState);
+  const pollingRef = useRef<NodeJS.Timeout | null>(null);
 
-  // 接続状態を更新
+  // ポーリングで部屋の状態を取得
+  const pollRoomStatus = useCallback(async () => {
+    if (!state.roomCode) return;
+    
+    try {
+      const data = await api.getRoomStatus(state.roomCode);
+      if (data.room) {
+        dispatch({ 
+          type: 'UPDATE_ROOM', 
+          players: data.room.players,
+          gameState: data.room.gameState,
+        });
+      }
+    } catch (error) {
+      console.error('Polling error:', error);
+    }
+  }, [api, state.roomCode]);
+
+  // ポーリング開始/停止
   useEffect(() => {
-    dispatch({ type: 'SET_CONNECTED', isConnected });
-  }, [isConnected]);
-
-  // Socketイベントをリッスン
-  useEffect(() => {
-    if (!socket) return;
-
-    socket.on('room_created', ({ roomCode, player }) => {
-      dispatch({ type: 'ROOM_CREATED', roomCode, player });
-    });
-
-    socket.on('room_joined', ({ roomCode, player, players }) => {
-      dispatch({ type: 'ROOM_JOINED', roomCode, player, players });
-    });
-
-    socket.on('player_joined', ({ player, players }) => {
-      dispatch({ type: 'PLAYER_JOINED', player, players });
-    });
-
-    socket.on('player_left', ({ playerId, players }) => {
-      dispatch({ type: 'PLAYER_LEFT', playerId, players });
-    });
-
-    socket.on('game_started', ({ gameState }) => {
-      dispatch({ type: 'GAME_STARTED', gameState });
-    });
-
-    socket.on('betting_started', ({ gameState }) => {
-      dispatch({ type: 'GAME_STATE_UPDATED', gameState });
-    });
-
-    socket.on('bet_placed', () => {
-      // ベット配置の通知（必要に応じて処理）
-    });
-
-    socket.on('cards_dealt', ({ gameState }) => {
-      dispatch({ type: 'GAME_STATE_UPDATED', gameState });
-    });
-
-    socket.on('turn_changed', ({ gameState }) => {
-      dispatch({ type: 'GAME_STATE_UPDATED', gameState });
-    });
-
-    socket.on('card_drawn', ({ gameState }) => {
-      dispatch({ type: 'GAME_STATE_UPDATED', gameState });
-    });
-
-    socket.on('player_stand', ({ gameState }) => {
-      dispatch({ type: 'GAME_STATE_UPDATED', gameState });
-    });
-
-    socket.on('round_ended', ({ result, gameState }) => {
-      dispatch({ type: 'ROUND_ENDED', result, gameState });
-    });
-
-    socket.on('stats_reset', ({ players }) => {
-      dispatch({ type: 'STATS_RESET', players });
-    });
-
-    socket.on('error', ({ message }) => {
-      dispatch({ type: 'SET_ERROR', error: message });
-    });
-
-    return () => {
-      socket.off('room_created');
-      socket.off('room_joined');
-      socket.off('player_joined');
-      socket.off('player_left');
-      socket.off('game_started');
-      socket.off('betting_started');
-      socket.off('bet_placed');
-      socket.off('cards_dealt');
-      socket.off('turn_changed');
-      socket.off('card_drawn');
-      socket.off('player_stand');
-      socket.off('round_ended');
-      socket.off('stats_reset');
-      socket.off('error');
-    };
-  }, [socket]);
+    if (state.roomCode && state.page !== 'title' && state.page !== 'join' && state.page !== 'create') {
+      // 1秒ごとにポーリング
+      pollingRef.current = setInterval(pollRoomStatus, 1000);
+      return () => {
+        if (pollingRef.current) {
+          clearInterval(pollingRef.current);
+        }
+      };
+    }
+  }, [state.roomCode, state.page, pollRoomStatus]);
 
   // アクション
-  const createRoom = useCallback(() => {
-    if (!socket || !state.nickname) return;
-    socket.emit('create_room', { nickname: state.nickname });
-  }, [socket, state.nickname]);
+  const createRoom = useCallback(async () => {
+    if (!state.nickname) return;
+    try {
+      const data = await api.createRoom(state.nickname, state.playerId);
+      dispatch({ type: 'ROOM_CREATED', roomCode: data.roomCode, player: data.player });
+    } catch (error: any) {
+      dispatch({ type: 'SET_ERROR', error: error.message });
+    }
+  }, [api, state.nickname, state.playerId]);
 
-  const joinRoom = useCallback((roomCode: string) => {
-    if (!socket || !state.nickname) return;
-    socket.emit('join_room', { roomCode: roomCode.toUpperCase(), nickname: state.nickname });
-  }, [socket, state.nickname]);
+  const joinRoom = useCallback(async (roomCode: string) => {
+    if (!state.nickname) return;
+    try {
+      const data = await api.joinRoom(roomCode, state.nickname, state.playerId);
+      dispatch({ type: 'ROOM_JOINED', roomCode: data.roomCode, player: data.player, players: data.players });
+    } catch (error: any) {
+      dispatch({ type: 'SET_ERROR', error: error.message });
+    }
+  }, [api, state.nickname, state.playerId]);
 
   const leaveRoom = useCallback(() => {
-    if (!socket) return;
-    socket.emit('leave_room');
     dispatch({ type: 'LEAVE_ROOM' });
-  }, [socket]);
+  }, []);
 
-  const startGame = useCallback(() => {
-    if (!socket) return;
-    socket.emit('start_game');
-  }, [socket]);
+  const startGame = useCallback(async () => {
+    if (!state.roomCode) return;
+    try {
+      const data = await api.startGame(state.roomCode, state.playerId);
+      dispatch({ type: 'GAME_STARTED', gameState: data.gameState });
+    } catch (error: any) {
+      dispatch({ type: 'SET_ERROR', error: error.message });
+    }
+  }, [api, state.roomCode, state.playerId]);
 
-  const placeBet = useCallback((amount: number) => {
-    if (!socket) return;
-    socket.emit('place_bet', { amount });
-  }, [socket]);
+  const placeBet = useCallback(async (amount: number) => {
+    if (!state.roomCode) return;
+    try {
+      const data = await api.placeBet(state.roomCode, state.playerId, amount);
+      dispatch({ type: 'GAME_STATE_UPDATED', gameState: data.gameState });
+    } catch (error: any) {
+      dispatch({ type: 'SET_ERROR', error: error.message });
+    }
+  }, [api, state.roomCode, state.playerId]);
 
-  const drawCard = useCallback(() => {
-    if (!socket) return;
-    socket.emit('draw_card');
-  }, [socket]);
+  const drawCard = useCallback(async () => {
+    if (!state.roomCode) return;
+    try {
+      const data = await api.performAction(state.roomCode, state.playerId, 'draw');
+      if (data.roundResult) {
+        dispatch({ type: 'ROUND_ENDED', result: data.roundResult, gameState: data.gameState });
+      } else {
+        dispatch({ type: 'GAME_STATE_UPDATED', gameState: data.gameState });
+      }
+    } catch (error: any) {
+      dispatch({ type: 'SET_ERROR', error: error.message });
+    }
+  }, [api, state.roomCode, state.playerId]);
 
-  const stand = useCallback(() => {
-    if (!socket) return;
-    socket.emit('stand');
-  }, [socket]);
+  const stand = useCallback(async () => {
+    if (!state.roomCode) return;
+    try {
+      const data = await api.performAction(state.roomCode, state.playerId, 'stand');
+      if (data.roundResult) {
+        dispatch({ type: 'ROUND_ENDED', result: data.roundResult, gameState: data.gameState });
+      } else {
+        dispatch({ type: 'GAME_STATE_UPDATED', gameState: data.gameState });
+      }
+    } catch (error: any) {
+      dispatch({ type: 'SET_ERROR', error: error.message });
+    }
+  }, [api, state.roomCode, state.playerId]);
 
-  const nextRound = useCallback(() => {
-    if (!socket) return;
-    socket.emit('next_round');
-  }, [socket]);
+  const nextRound = useCallback(async () => {
+    if (!state.roomCode) return;
+    try {
+      const data = await api.nextRound(state.roomCode);
+      dispatch({ type: 'GAME_STATE_UPDATED', gameState: data.gameState });
+    } catch (error: any) {
+      dispatch({ type: 'SET_ERROR', error: error.message });
+    }
+  }, [api, state.roomCode]);
 
-  const resetStats = useCallback(() => {
-    if (!socket) return;
-    socket.emit('reset_stats');
-  }, [socket]);
+  const resetStats = useCallback(async () => {
+    if (!state.roomCode) return;
+    try {
+      const data = await api.resetStats(state.roomCode, state.playerId);
+      dispatch({ type: 'STATS_RESET', players: data.players });
+    } catch (error: any) {
+      dispatch({ type: 'SET_ERROR', error: error.message });
+    }
+  }, [api, state.roomCode, state.playerId]);
 
   const actions = {
     createRoom,

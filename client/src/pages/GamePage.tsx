@@ -27,7 +27,8 @@ export const GamePage: React.FC = () => {
   }, [gameState]);
 
   // 自分のターンかどうか
-  const isMyTurn = gameState?.currentTurnPlayerId === playerId;
+  const currentPlayer = gameState?.players[gameState?.currentTurnIndex ?? -1];
+  const isMyTurn = currentPlayer?.id === playerId;
 
   // ベット可能かどうか
   const canBet = gameState?.phase === 'betting' && !myPlayer?.isDealer && myPlayer?.bet === 0;
@@ -86,7 +87,7 @@ export const GamePage: React.FC = () => {
       <div className="mb-3">
         <PlayerList
           players={gameState.players}
-          currentPlayerId={gameState.currentTurnPlayerId}
+          currentPlayerId={currentPlayer?.id ?? null}
           myId={playerId}
           onPlayerClick={setSelectedPlayer}
         />

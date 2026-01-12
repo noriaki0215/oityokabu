@@ -1,7 +1,7 @@
-// メインアプリケーション
+// メインアプリケーション（API版）
 
 import React from 'react';
-import { SocketProvider } from './context/SocketContext';
+import { ApiProvider } from './context/ApiContext';
 import { GameProvider, useGame } from './context/GameContext';
 import { TitlePage } from './pages/TitlePage';
 import { JoinPage } from './pages/JoinPage';
@@ -40,11 +40,11 @@ const AppContent: React.FC = () => {
 
 const App: React.FC = () => {
   return (
-    <SocketProvider>
+    <ApiProvider>
       <GameProvider>
         <AppContent />
       </GameProvider>
-    </SocketProvider>
+    </ApiProvider>
   );
 };
 

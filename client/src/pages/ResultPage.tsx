@@ -5,7 +5,7 @@ import { useGame } from '../context/GameContext';
 import { Button } from '../components/Button';
 import { Modal } from '../components/Modal';
 import { Hand } from '../components/Hand';
-import { ROLE_NAMES } from '@shared/types/game';
+import { ROLE_NAMES } from '../types';
 
 export const ResultPage: React.FC = () => {
   const { state, actions } = useGame();
